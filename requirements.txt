@@ -1,0 +1,6 @@
+aiortc>=1.5.0
+mss>=9.0.1
+numpy>=1.24.0
+pyautogui>=0.9.53
+websockets>=11.0
+av>=10.0.0
