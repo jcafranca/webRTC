@@ -45,27 +45,36 @@ async def handler(websocket):
                 if session_id not in connected_clients:
                     connected_clients[session_id] = {}
                 
-                connected_clients[session_id][websocket] = role
-                logger.info(f"Client joined session {session_id} as {role}")
+                # Store structured info
+                client_id = data.get("senderId", "unknown")
+                connected_clients[session_id][websocket] = {
+                    "role": role,
+                    "clientId": client_id
+                }
+                logger.info(f"Client joined session {session_id} as {role} (ID: {client_id})")
 
                 # If host joined, notify subscribers
                 if role == "host":
                     await broadcast_status(session_id, True)
 
                 # Notify the joiner about existing peers
+                # Convert dict values to list for serialization
+                clients_list = list(connected_clients[session_id].values())
                 peer_count = len(connected_clients[session_id])
+                
                 await websocket.send(json.dumps({
                     "type": "room_info",
                     "peer_count": peer_count,
-                    "clients": list(connected_clients[session_id].values())
+                    "clients": clients_list
                 }))
                 
                 # Notify others
-                for ws, r in connected_clients[session_id].items():
+                for ws, client_info in connected_clients[session_id].items():
                     if ws != websocket:
                         await ws.send(json.dumps({
                             "type": "peer_joined",
-                            "role": role
+                            "role": role,
+                            "clientId": client_id
                         }))
             
             elif msg_type == "subscribe-status":
@@ -83,8 +92,8 @@ async def handler(websocket):
                 for sid in target_ids:
                     is_online = False
                     if sid in connected_clients:
-                        for r in connected_clients[sid].values():
-                            if r == 'host':
+                        for client_info in connected_clients[sid].values():
+                            if client_info["role"] == 'host':
                                 is_online = True
                                 break
                     results[sid] = is_online
@@ -96,20 +105,33 @@ async def handler(websocket):
 
             elif session_id:
                 # Intelligent Routing
-                current_role = connected_clients[session_id].get(websocket)
+                client_info = connected_clients[session_id].get(websocket)
+                if not client_info:
+                    continue
+                    
+                current_role = client_info["role"]
                 session = connected_clients.get(session_id, {})
-                
-                if current_role == "host" or current_role == "agent":
-                    # Host -> All Viewers
-                    for ws, r in session.items():
-                        if ws != websocket and r == "viewer":
+                target_id = data.get("targetId")
+
+                if target_id:
+                    # Targeted message
+                    for ws, info in session.items():
+                        if info.get("clientId") == target_id:
                             await ws.send(message)
-                
-                elif current_role == "viewer":
-                    # Viewer -> Host Only
-                    for ws, r in session.items():
-                        if r == "host" or r == "agent":
-                            await ws.send(message)
+                            break
+                else:
+                    # Broadcast logic
+                    if current_role == "host" or current_role == "agent":
+                        # Host -> All Viewers
+                        for ws, info in session.items():
+                            if ws != websocket and info["role"] == "viewer":
+                                await ws.send(message)
+                    
+                    elif current_role == "viewer":
+                        # Viewer -> Host Only
+                        for ws, info in session.items():
+                            if info["role"] == "host" or info["role"] == "agent":
+                                await ws.send(message)
                          
     except Exception as e:
         logger.error(f"Error: {e}")
