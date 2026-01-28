@@ -6,6 +6,16 @@ import websockets
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signaling-server")
 
+# ------------------------------
+# License Management
+# ------------------------------
+# In a real production system, this would be a database lookup
+VALID_LICENSE_KEYS = {
+    "OMNIDESK-PRO-2024", 
+    "SECRET-KEY-123",
+    "DEV-LICENSE-001"
+}
+
 connected_clients = {}  # {session_id: {websocket: {role, clientId}}}
 status_subscribers = {}  # {session_id: set(websocket)}
 
@@ -54,6 +64,19 @@ async def handler(websocket):
                 session_id = data.get("sessionId")
                 role = data.get("role")
                 client_id = data.get("senderId", "unknown")
+
+                # License Check for Hosts/Agents
+                if role in ("host", "agent"):
+                    license_key = data.get("licenseKey")
+                    if license_key not in VALID_LICENSE_KEYS:
+                        logger.warning(f"Connection rejected for {role} (ID: {client_id}): Invalid license '{license_key}'")
+                        await safe_send(websocket, json.dumps({
+                            "type": "error", 
+                            "message": "Authentication Failed: Invalid or missing license key. Access denied."
+                        }))
+                        # Close connection after a short delay to ensure message sends
+                        await asyncio.sleep(0.5)
+                        return
 
                 if session_id not in connected_clients:
                     connected_clients[session_id] = {}
