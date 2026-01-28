@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import websockets
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signaling-server")
@@ -18,6 +19,7 @@ VALID_LICENSE_KEYS = {
 
 connected_clients = {}  # {session_id: {websocket: {role, clientId}}}
 status_subscribers = {}  # {session_id: set(websocket)}
+peer_last_seen = {} # {session_id: timestamp}
 
 # ------------------------------
 # Safe send helper
@@ -32,11 +34,16 @@ async def safe_send(ws, message, timeout=0.2):
 # Broadcast host status
 # ------------------------------
 async def broadcast_status(session_id, is_online):
+    current_time = time.time()
+    # Update last seen if offline (or online, to keep it fresh)
+    peer_last_seen[session_id] = current_time
+    
     if session_id in status_subscribers:
         message = json.dumps({
             "type": "status-update",
             "sessionId": session_id,
-            "isOnline": is_online
+            "isOnline": is_online,
+            "lastSeen": current_time
         })
         subscribers = list(status_subscribers[session_id])
         await asyncio.gather(
@@ -125,16 +132,20 @@ async def handler(websocket):
 
                 # Send initial status immediately
                 results = {}
+                last_seen_times = {}
                 for sid in target_ids:
                     is_online = any(
                         client_info["role"] == "host"
                         for client_info in connected_clients.get(sid, {}).values()
                     )
                     results[sid] = is_online
+                    # If online, last seen is now. If offline, use stored value or 0
+                    last_seen_times[sid] = time.time() if is_online else peer_last_seen.get(sid, 0)
 
                 await safe_send(websocket, json.dumps({
                     "type": "status-response",
-                    "statuses": results
+                    "statuses": results,
+                    "lastSeen": last_seen_times
                 }))
 
             # --------------------------
@@ -182,7 +193,17 @@ async def handler(websocket):
                 logger.info(f"Client disconnected from session {session_id}")
 
                 if role == "host":
-                    asyncio.create_task(broadcast_status(session_id, False))
+                    # Check if any other host is still online (e.g. during restart)
+                    remaining_hosts = any(
+                        info["role"] == "host" 
+                        for info in connected_clients.get(session_id, {}).values()
+                    )
+                    
+                    if remaining_hosts:
+                        logger.info(f"Host disconnected, but session {session_id} remains ONLINE (other active host detected)")
+                        asyncio.create_task(broadcast_status(session_id, True))
+                    else:
+                        asyncio.create_task(broadcast_status(session_id, False))
 
             if not connected_clients[session_id]:
                 del connected_clients[session_id]
