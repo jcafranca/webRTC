@@ -826,7 +826,7 @@ async def main():
 
     async with websockets.serve(
         handler,
-        "127.0.0.1",
+        "0.0.0.0",
         8765,
         process_request=process_request
     ):
@@ -839,3 +839,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
